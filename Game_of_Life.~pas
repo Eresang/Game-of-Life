@@ -1,0 +1,405 @@
+unit Game_of_Life;
+
+interface
+
+uses
+  Windows, SysUtils, Math, Canvas, Buffer;
+
+type
+  TS_Game_of_Life = class
+  private
+    pWidth, pHeight, pLine: Integer;
+
+    pBufferSwitch: Boolean;
+    pWrap: Boolean;
+
+    pCanvas: TS_Canvas;
+    pBufferA, pBufferB, pBufferS: TS_Buffer;
+
+    function PreviousBuffer: TS_Buffer;
+    function CurrentBuffer: TS_Buffer;
+
+    function Validate(x, y: Longint): Boolean;
+    procedure Visualize;
+
+    function GetAt(x, y: Longint; Buffer: TS_Buffer): Boolean;
+    procedure SetAt(x, y: Longint; Buffer: TS_Buffer; Value: Boolean);
+  public
+    constructor Create;
+    destructor Destroy; override;
+
+    procedure Flip(x, y: Longint; Value: Boolean);
+
+    procedure Save;
+    procedure Load;
+
+    procedure SaveToFile(Filename: String);
+    procedure LoadFromFile(Filename: String);
+
+    procedure SetSize(x, y: Longint);
+    procedure Randomize(Seeded: Boolean; Seed: Cardinal);
+    procedure Clear;
+    procedure Generate;
+
+    property Width: Longint read pWidth;
+    property Height: Longint read pHeight;
+
+    property Wrap: Boolean read pWrap write pWrap;
+
+    property Canvas: TS_Canvas read pCanvas;
+  end;
+
+implementation
+
+// ---
+
+var
+  randomSeed: Cardinal = $1FA348CE;
+
+procedure rRandomize;
+asm
+  call GetTickCount
+  xor eax, randomSeed
+  mov randomSeed, eax
+end;
+
+function rRandom: Cardinal;
+asm
+  push edx
+  mov eax, 373585361
+  mul randomSeed
+  add eax, edx
+  adc eax, 179436109
+  mov randomSeed, eax
+  pop edx
+end;
+
+function rRandomN(Limit: Cardinal): Cardinal;
+asm
+  push edx
+  mov eax, 373585361
+  mul randomSeed
+  add eax, edx
+  adc eax, 179436109
+  mov randomSeed, eax
+
+  mul Limit
+  mov eax, edx
+
+  pop edx
+end;
+
+// ---
+
+function TS_Game_of_Life.PreviousBuffer: TS_Buffer;
+begin
+  if pBufferSwitch then
+    Result := pBufferA
+  else
+    Result := pBufferB;
+end;
+
+function TS_Game_of_Life.CurrentBuffer: TS_Buffer;
+begin
+  if pBufferSwitch then
+    Result := pBufferB
+  else
+    Result := pBufferA;
+end;
+
+function TS_Game_of_Life.Validate(x, y: Longint): Boolean;
+begin
+  Result := (x >= 0) and (y >= 0) and (x < pWidth) and (y < pHeight);
+end;
+
+function TS_Game_of_Life.GetAt(x, y: Longint; Buffer: TS_Buffer): Boolean;
+begin
+  if Validate(x, y) then begin
+    // Result := PByte(Buffer.Element[pWidth * y + x])^ <> 0
+
+    Result := PByte(Buffer.Element[x div 8 + pLine * y])^ and (1 shl (x and 7)) <> 0;
+
+  end else begin
+    if pWrap then
+      Result := GetAt((x + pWidth) mod pWidth, (y + pHeight) mod pHeight, Buffer)
+    else
+      Result := False;
+  end;
+end;
+
+procedure TS_Game_of_Life.SetAt(x, y: Longint; Buffer: TS_Buffer; Value: Boolean);
+var
+  index: Integer;
+begin
+  if Validate(x, y) then begin
+    // PByte(Buffer.Element[pWidth * y + x])^ := Integer(Value)
+
+    index := x div 8 + pLine * y;
+    PByte(Buffer.Element[index])^ := PByte(Buffer.Element[index])^ and not (1 shl (x and 7)) or (Integer(Value) shl (x and 7));
+
+  end else if pWrap then
+    SetAt((x + pWidth) mod pWidth, (y + pHeight) mod pHeight, Buffer, Value);
+end;
+
+procedure TS_Game_of_Life.Visualize;
+var
+  i, j: Integer;
+  pBGRT: PS_BGRT;
+  pBuffer: TS_Buffer;
+  pHalfW, pHalfH, pValue: Integer;
+const
+  CS_Orange: TS_BGRT = (B:  5;G:185;R:255;T:255);
+begin
+  pBuffer := PreviousBuffer;
+  
+  pHalfW := pWidth div 2;
+  pHalfH := pHeight div 2;
+
+  for j := 0 to pHeight - 1 do begin
+    pBGRT := pCanvas.Scanline[j];
+
+    for i := 0 to pWidth - 1 do begin
+      if (pHalfH + pHalfW > 0) then
+        pValue := Round((Abs(i - pHalfW + 0.5) + Abs(j - pHalfH + 0.5)) * 24) div (pHalfH + pHalfW)
+      else
+        pValue := 0;
+
+      if GetAt(i, j, pBuffer) then begin
+        pValue := pValue * 4;
+        pBGRT^ := ToBGRT(Max(0, CS_Orange.B - (pValue * 9 div 8)), Max(0, CS_Orange.G - pValue), Max(0, CS_Orange.R - pValue), 255);
+      end else begin
+        if Odd(i + j) then
+          pBGRT^ := CS_Black
+        else begin
+          pValue := 24 - pValue;
+          pBGRT^ := ToBGRT(pValue * 9 div 8, pValue, pValue, 255);
+        end;
+      end;
+
+      Inc(pBGRT);
+    end;
+  end;
+end;
+
+constructor TS_Game_of_Life.Create;
+begin
+  inherited Create;
+
+  pCanvas := TS_Canvas.Create;
+  pBufferA := TS_Buffer.Create;
+  pBufferB := TS_Buffer.Create;
+  pBufferS := TS_Buffer.Create;
+
+  SetSize(0, 0);
+end;
+
+destructor TS_Game_of_Life.Destroy;
+begin
+  pCanvas.Free;
+  pBufferA.Free;
+  pBufferB.Free;
+  pBufferS.Free;
+
+  inherited Destroy;
+end;
+
+procedure TS_Game_of_Life.Flip(x, y: Longint; Value: Boolean);
+begin
+  SetAt(x, y, PreviousBuffer, Value);
+  Visualize;
+end;
+
+procedure TS_Game_of_Life.Save;
+var
+  i: Integer;
+  pPreviousBuffer: TS_Buffer;
+  pBytePointerA, pBytePointerB: PByte;
+begin
+  pPreviousBuffer := PreviousBuffer;
+  pBytePointerA := pPreviousBuffer.Element[0];
+  pBytePointerB := pBufferS.Element[0];
+
+  for i := pPreviousBuffer.Size downto 1 do begin
+    pBytePointerB^ := pBytePointerA^;
+    Inc(pBytePointerA);
+    Inc(pBytePointerB);
+  end;
+end;
+
+procedure TS_Game_of_Life.Load;
+var
+  i: Integer;
+  pPreviousBuffer: TS_Buffer;
+  pBytePointerA, pBytePointerB: PByte;
+begin
+  pPreviousBuffer := PreviousBuffer;
+  pBytePointerB := pPreviousBuffer.Element[0];
+  pBytePointerA := pBufferS.Element[0];
+
+  for i := pPreviousBuffer.Size downto 1 do begin
+    pBytePointerB^ := pBytePointerA^;
+    Inc(pBytePointerA);
+    Inc(pBytePointerB);
+  end;
+
+  Visualize;
+end;
+
+procedure TS_Game_of_Life.SaveToFile(Filename: String);
+var
+  Output: File;
+  i: Integer;
+begin
+  AssignFile(Output, Filename);
+  ReWrite(Output, 1);
+
+  BlockWrite(Output, pWidth, 4);
+  BlockWrite(Output, pHeight, 4);
+  
+  i := pBufferS.Size;
+  BlockWrite(Output, i, 4);
+  BlockWrite(Output, pBufferS.Element[0]^, pBufferS.Size);
+
+  CloseFile(Output);
+end;
+
+procedure TS_Game_of_Life.LoadFromFile(Filename: String);
+var
+  Input: File;
+  i, j, W, H, offW, offH, line: Integer;
+  Buffer: TS_Buffer;
+  oldWrap: Boolean;
+
+  function GetAtBuffer(x, y: Longint): Boolean;
+  begin
+    if (x >= 0) and (y >= 0) and (x < W) and (y < H) then begin
+      Result := PByte(Buffer.Element[x div 8 + line * y])^ and (1 shl (x and 7)) <> 0;
+    end else
+      Result := False;
+  end;
+begin
+  oldWrap := pWrap;
+  pWrap := False;
+
+    Buffer := TS_Buffer.Create;
+
+    AssignFile(Input, Filename);
+    Reset(Input, 1);
+
+    BlockRead(Input, W, 4);
+    BlockRead(Input, H, 4);
+
+    BlockRead(Input, i, 4);
+    Buffer.SetSize(i, 1, False);
+    BlockRead(Input, Buffer.Element[0]^, i);
+
+    pBufferS.SetSize(pBufferS.Size, 1, False);
+
+    offW := (W - pWidth) div 2;
+    offH := (H - pHeight) div 2;
+
+    line := i div H;
+
+    for j := pHeight - 1 downto 0 do
+      for i := pWidth - 1 downto 0 do
+        SetAt(j, i, pBufferS, GetAtBuffer(j + offH, i + offW));
+
+    CloseFile(Input);
+
+    Buffer.Free;
+
+    pWrap := oldWrap;
+end;
+
+procedure TS_Game_of_Life.SetSize(x, y: Longint);
+var
+  newSize: Integer;
+begin
+  pWidth := x;
+  pHeight := y;
+
+  pCanvas.SetSize(x, y);
+
+  pLine := x;
+  if pLine and 7 <> 0 then
+    Inc(pLine, 8);
+  pLine := pLine div 8;
+
+  newSize := pLine * y;
+
+  // pBufferA.SetSize(x * y, 1, False);
+  // pBufferB.SetSize(x * y, 1, False);
+
+  pBufferA.SetSize(newSize, 1, False);
+  pBufferB.SetSize(newSize, 1, False);
+  pBufferS.SetSize(newSize, 1, False);
+end;
+
+procedure TS_Game_of_Life.Randomize(Seeded: Boolean; Seed: Cardinal);
+var
+  i: Integer;
+  pPreviousBuffer: TS_Buffer;
+  pBytePointer: PByte;
+begin
+  if Seeded then
+    randomSeed := Seed;
+
+  pPreviousBuffer := PreviousBuffer;
+  pBytePointer := pPreviousBuffer.Element[0];
+
+  for i := pPreviousBuffer.Size downto 1 do begin
+    pBytePointer^ := rRandom;
+    Inc(pBytePointer);
+  end;
+
+  Visualize;
+end;
+
+procedure TS_Game_of_Life.Clear;
+var
+  i: Integer;
+  pCurrentBuffer: TS_Buffer;
+  pBytePointer: PByte;
+begin
+  pCurrentBuffer := CurrentBuffer;
+  pBytePointer := pCurrentBuffer.Element[0];
+
+  for i := pCurrentBuffer.Size downto 1 do begin
+    pBytePointer^ := 0;
+    Inc(pBytePointer);
+  end;
+
+  pBufferSwitch := not pBufferSwitch;
+  Visualize;
+end;
+
+procedure TS_Game_of_Life.Generate;
+var
+  pPreviousBuffer: TS_Buffer;
+  pCurrentBuffer: TS_Buffer;
+
+  i, j, k, c: Integer;
+begin
+  pPreviousBuffer := PreviousBuffer;
+  pCurrentBuffer := CurrentBuffer;
+
+  for j := 0 to pHeight - 1 do begin
+    for i := 0 to pWidth - 1 do begin
+      c := 0;
+
+      for k := 0 to 8 do
+        if (k <> 4) and GetAt(i + (k mod 3 - 1), j + (k div 3 - 1), pPreviousBuffer) then
+          Inc(c);
+
+      if GetAt(i, j, pPreviousBuffer) then
+        SetAt(i, j, pCurrentBuffer, (c > 1) and (c < 4))
+      else
+        SetAt(i, j, pCurrentBuffer, c = 3);
+    end;
+  end;
+
+  pBufferSwitch := not pBufferSwitch;
+  Visualize;
+end;
+
+end.
